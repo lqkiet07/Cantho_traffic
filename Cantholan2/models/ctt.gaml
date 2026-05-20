@@ -384,6 +384,12 @@ species intersection skills: [intersection_skill] {
 	map<road,int> queue_per_road;
 	int queue_ways1 <- 0;
 	int queue_ways2 <- 0;
+	
+	// 4 biến đếm hàng chờ cho 4 vùng nhánh (tính từ đèn giao thông lùi về sau)
+	int queue_N <- 0; // Nhánh từ Bắc tiến vào ngã tư (đi về hướng Nam)
+	int queue_S <- 0; // Nhánh từ Nam tiến vào ngã tư (đi về hướng Bắc)
+	int queue_E <- 0; // Nhánh từ Đông tiến vào ngã tư (đi về hướng Tây)
+	int queue_W <- 0; // Nhánh từ Tây tiến vào ngã tư (đi về hướng Đông)
 	list<road> ways1 <- [];
 	list<road> ways2 <- [];
 	rgb color_fire;
@@ -451,47 +457,90 @@ species intersection skills: [intersection_skill] {
 
 
 	reflex calculate_queue when: is_traffic_signal {
-		// reset queue counters
-		loop rd over: roads_in {
-			queue_per_road[road(rd)] <- 0;
-		}
+		// Reset queue map (nếu cần dùng cho việc khác sau này)
+		loop rd over: ways1 + ways2 { queue_per_road[rd] <- 0; }
 		
-		list<vehicle> near_vehicles <- vehicle where (each distance_to self < 30.0);
-		int count_slow <- 0;
+		list<vehicle> all_vehicles <- (motobike as list) + (car as list) + (truck as list);
+		list<vehicle> near_vehicles <- all_vehicles where (each distance_to self < 150.0);
+		
+		int debug_total_near <- 0;
+		int debug_on_road_in <- 0;
+		int debug_is_slow <- 0;
+		
+		int count_w1 <- 0;
+		int count_w2 <- 0;
+		int c_N <- 0;
+		int c_S <- 0;
+		int c_E <- 0;
+		int c_W <- 0;
 		
 		loop v over: near_vehicles {
+			debug_total_near <- debug_total_near + 1;
 			if (v.current_road != nil) {
 				road current_rd <- road(v.current_road);
-				if (current_rd in roads_in) {
-					// in ra tốc độ của xe đang ở gần ngã tư để kiểm tra
-					// write name + " - Vehicle near: speed = " + v.speed + " real_speed = " + v.real_speed;
+				// Lấy node đích (ngã tư đến) của đoạn đường xe đang chạy
+				intersection dest_node <- intersection(road_network target_of current_rd);
+				
+				// Kiểm tra: Nếu đích đến của đoạn đường nằm trong bán kính cụm ngã tư này
+				// LƯU Ý QUAN TRỌNG: Logic này chính xác là "từ cây đèn lùi về sau" 
+				// vì xe chỉ được tính khi nó ở đoạn đường CÓ HƯỚNG CHỈ VÀO ngã tư!
+				if (dest_node != nil and (dest_node distance_to self < 50.0)) {
+					debug_on_road_in <- debug_on_road_in + 1;
 					
+					// Nếu xe đang dừng hoặc di chuyển rất chậm
 					if (v.speed < 5 #km/#h or v.real_speed < 5 #km/#h) {
-						queue_per_road[current_rd] <- queue_per_road[current_rd] + 1;
-						count_slow <- count_slow + 1;
+						debug_is_slow <- debug_is_slow + 1;
+						
+						// Xác định góc của xe tới tâm ngã tư (từ 0 đến 360 độ)
+						float ang_to_center <- float(v.location towards self.location);
+						
+						// Phân làm 4 vùng nhánh riêng biệt
+						if (ang_to_center >= 315 or ang_to_center < 45) {
+							// Góc hướng Đông (tức xe nằm ở nhánh Tây, đi về hướng Đông)
+							c_W <- c_W + 1;
+							count_w2 <- count_w2 + 1;
+						} else if (ang_to_center >= 45 and ang_to_center < 135) {
+							// Góc hướng Nam (tức xe nằm ở nhánh Bắc, đi về hướng Nam)
+							c_N <- c_N + 1;
+							count_w1 <- count_w1 + 1;
+						} else if (ang_to_center >= 135 and ang_to_center < 225) {
+							// Góc hướng Tây (tức xe nằm ở nhánh Đông, đi về hướng Tây)
+							c_E <- c_E + 1;
+							count_w2 <- count_w2 + 1;
+						} else { 
+							// 225 đến 315: Góc hướng Bắc (tức xe nằm ở nhánh Nam, đi về hướng Bắc)
+							c_S <- c_S + 1;
+							count_w1 <- count_w1 + 1;
+						}
 					}
 				}
 			}
 		}
 		
-		queue_ways1 <- ways1 sum_of (queue_per_road[each]);
-		queue_ways2 <- ways2 sum_of (queue_per_road[each]);
+		queue_ways1 <- count_w1;
+		queue_ways2 <- count_w2;
+		queue_N <- c_N;
+		queue_S <- c_S;
+		queue_E <- c_E;
+		queue_W <- c_W;
 		
-		// Luôn in ra để kiểm tra xem hàm có chạy không, và length của ways1, ways2
-		// write name + " | roads_in: " + length(roads_in) + " | ways1: " + length(ways1) + " | ways2: " + length(ways2) + " | slow_vehicles: " + count_slow;
-		
-		if (queue_ways1 > 0 or queue_ways2 > 0) {
-			write name + " | Hướng 1: " + queue_ways1 + " xe | Hướng 2: " + queue_ways2 + " xe";
-		}
-		
-		// In ra bắt buộc một chu kỳ (VD: tick mod 100) để theo dõi nếu nó cứ bằng 0
-		if (cycle mod 50 = 0 and (length(ways1) > 0 or length(ways2) > 0)) {
-			write "DEBUG " + name + " -> roads_in: " + length(roads_in) + " | ways1: " + length(ways1) + " | ways2: " + length(ways2) + " | near_veh: " + length(near_vehicles) + " | slow: " + count_slow;
+		// Chỉ theo dõi ngã tư 'intersection33' và chỉ in ra mỗi 10 bước
+		if (name = "intersection33" and cycle mod 10 = 0) {
+			write "--- Cycle " + cycle + " | " + name + " ---";
+			write "Tổng xe bán kính 100m (near): " + debug_total_near;
+			write "Số xe nằm trên đường đi vào ngã tư (on_road_in): " + debug_on_road_in;
+			write "Số xe đang dừng/chậm trên đường đi vào (slow): " + debug_is_slow;
+			if (debug_is_slow > 0) {
+				write "=> CHI TIẾT 4 NHÁNH | Nhánh Bắc: " + queue_N + " | Nhánh Nam: " + queue_S + " | Nhánh Đông: " + queue_E + " | Nhánh Tây: " + queue_W;
+			}
 		}
 	}
 
 	aspect default {
 		if (is_traffic_signal) {
+			// Hiển thị tên các ngã tư có đèn giao thông trực tiếp lên map 3D
+			//draw name at: {location.x, location.y, 10} color: #yellow font: font("Arial", 18, #bold);
+			
 //			rgb light_color <- is_green ? #green : #red;
 //			draw cylinder(0.3, 5) at: location color: #black;
 //	        draw sphere(1.5) at: {location.x, location.y, 5} color: light_color;
